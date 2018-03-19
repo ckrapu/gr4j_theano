@@ -257,7 +257,7 @@ def simulate_streamflow(P,E,
 
 
 class GR4J(Continuous):
-    """ Class for wrapping GR4J hydrology model in PyMC3 with Theano"""
+    """Class for wrapping GR4J hydrology model in PyMC3 with Theano"""
 
     def __init__(self,x1,x2,x3,x4,x4_limit,S0,R0,Pr0,sd,
                 precipitation,evaporation,subsample_index=None,truncate=-1,
@@ -300,8 +300,8 @@ class GR4J(Continuous):
         # This restricts likelihood calculations to fewer than len(observed)
         # points. This can potentially make for more rapid calculations.
         if self.subsample_index is not None:
-            observed   = observed[subsample_index]
-            simulated  = simulated[subsample_index]
+            observed   = observed[self.subsample_index]
+            simulated  = simulated[self.subsample_index]
 
-        density = pm.Normal.dist(mu = simulated,sd = self.sd)
+        density = Normal.dist(mu = simulated,sd = self.sd)
         return tt.sum(density.logp(observed))
