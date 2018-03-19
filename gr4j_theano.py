@@ -158,55 +158,9 @@ def streamflow_step(P,E,S,runoff_history,R,x1,x2,x3,UH1,UH2):
     # up with the order of the kwarg list argument 'outputs_info' to theano.scan.
     return Q,S,runoff_history,R
 
-def streamflow_step_tv_x1(P,E,x1,S,runoff_history,R,x2,x3,x4,UH1,UH2):
-
-    # Calculate net precipitation and evapotranspiration
-    precip_difference = P-E
-    precip_net    = tt.maximum(precip_difference,0)
-    evap_net      =  tt.maximum(-precip_difference,0)
-
-    # Calculate the fraction of net precipitation that is stored
-    precip_store = calculate_precip_store(S,precip_net,x1)
-
-    # Calculate the amount of evaporation from storage
-    evap_store   = calculate_evap_store(S,evap_net,x1)
-
-    # Update the storage by adding effective precipitation and
-    # removing evaporation
-    S = S - evap_store + precip_store
-
-    # Update the storage again to reflect percolation out of the store
-    perc = calculate_perc(S,x1)
-    S = S  - perc
-
-    # The precip. for routing is the sum of the rainfall which
-    # did not make it to storage and the percolation from the store
-    current_runoff = perc + ( precip_net - precip_store)
-
-    # runoff_history keeps track of the recent runoff values in a vector
-    # that is shifted by 1 element each timestep.
-    runoff_history = tt.roll(runoff_history,1)
-    runoff_history = tt.set_subtensor(runoff_history[0],current_runoff)
-
-    Q9 = 0.9* tt.dot(runoff_history,UH1)
-    Q1 = 0.1* tt.dot(runoff_history,UH2)
-
-    F = x2*(R/x3)**3.5
-    R = tt.maximum(0,R+Q9+F)
-
-    Qr = R * (1-(1+(R/x3)**4)**-0.25)
-    R = R-Qr
-
-    Qd = tt.maximum(0,Q1+F)
-    Q = Qr+Qd
-
-    # The order of the returned values is important because it must correspond
-    # up with the order of kwarg list argument 'outputs_info' to theano.scan.
-    return Q,S,precip_store,evap_store,perc,runoff_history,R,F,Q9,Q1
-
 def simulate_streamflow(P,E,
                   S0,Pr0,R0,x1,x2,x3,x4,x4_limit,
-                  truncate_gradient=-1):
+                  truncate_gradient=-1,tv_x1 = False):
     """Simulates streamflow over time using the model logic from GR4J as
     implemented in Theano.
 
@@ -227,7 +181,7 @@ def simulate_streamflow(P,E,
       some streamflow which must be routed in the first few timesteps.
     R0 : Initial Theano tensor
       Beginning value of storage in the routing reservoir.
-    x1 : scalar Theano tensor
+    x1 : scalar Theano tensor or 1D Theano tensor
       Storage reservoir parameter
     x2 : scalar Theano tensor
       Catchment water exchange parameter
@@ -235,7 +189,9 @@ def simulate_streamflow(P,E,
       Routing reservoir parameters
     x4 : scalar Theano tensor
       Routing time parameter
-
+    tv_x1 : boolean
+      Determines whether or not x1 is allowed to vary over time, i.e. whether
+      x1 is a scalar or a vector.
 
     Returns
     -------
@@ -243,11 +199,19 @@ def simulate_streamflow(P,E,
       Time series of simulated streamflow
     """
     UH1,UH2 = hydrograms(x4_limit,x4)
-    forcings        = [P,E]
-    state_variables = [None,S0,Pr0,R0]
-    parameters      = [x1,x2,x3,UH1,UH2]
+    if tv_x1:
+        forcings        = [P,E,x1]
+        parameters      = [x2,x3,UH1,UH2]
+        step_function   = streamflow_step_tv_x1
+    else:
+        forcings        = [P,E]
+        parameters      = [x1,x2,x3,UH1,UH2]
+        step_function   = streamflow_step
 
-    results,out_dict = theano.scan(fn = streamflow_step,
+    state_variables = [None,S0,Pr0,R0]
+
+
+    results,out_dict = theano.scan(fn = step_function,
                           sequences = forcings,
                           outputs_info = state_variables,
                           non_sequences = parameters,
@@ -261,7 +225,7 @@ class GR4J(Continuous):
 
     def __init__(self,x1,x2,x3,x4,x4_limit,S0,R0,Pr0,sd,
                 precipitation,evaporation,subsample_index=None,truncate=-1,
-                *args,**kwargs):
+                tv_x1=False,*args,**kwargs):
         super(GR4J,self).__init__(*args,**kwargs)
 
         self.x1 = tt.as_tensor_variable(x1)
@@ -286,6 +250,7 @@ class GR4J(Continuous):
         # If we only want to evaluate the likelihood at a few points, we can use
         # this argument to restrict the calculations.
         self.subsample_index = subsample_index
+        self.tv_x1 = tv_x1
 
     def logp(self,observed):
         """Calculated the log likelihood of the observed streamflow given
@@ -295,7 +260,8 @@ class GR4J(Continuous):
                                        self.S0,self.Pr0,self.R0,
                                        self.x1,self.x2,self.x3,self.x4,
                                        self.x4_limit,
-                                       truncate_gradient=self.truncate)
+                                       truncate_gradient=self.truncate,
+                                       tv_x1 = self.tv_x1)
 
         # This restricts likelihood calculations to fewer than len(observed)
         # points. This can potentially make for more rapid calculations.
